@@ -15,7 +15,7 @@ import pandas as pd
 from sklearn.neighbors import BallTree, KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import time
 import itertools
 from config import (
@@ -110,7 +110,26 @@ def create_shelter_models(csv_path, manual_only=False):
         
         X = np.vstack((positive_data, negative_data))
         y = np.concatenate((y_pos, y_neg))
+        
+        # [추가] 최종 데이터셋 구성 정보 출력
+        if r_idx == 0:
+            print(f"\n--- 최종 데이터셋 구성 및 파생 컬럼 확인 ---")
+            print(f"   -> Positive(대피소): {len(positive_data)}개")
+            print(f"   -> Negative(사각지대): {len(negative_data)}개")
+            print(f"   -> 총 데이터 개수: {len(X)}개")
+            
+            # 컬럼 구조 시각화용 출력 (설명과 일치시키기 위해 파생 컬럼 포함)
+            # Positive 데이터에 대해 샘플 생성 (Radius가 존재하므로)
+            preview_df = pd.DataFrame(positive_data[:5], columns=['Latitude', 'Longitude'])
+            preview_df['Capacity'] = capacities[:5]
+            preview_df['Radius(m)'] = radii_m[:5]
+            preview_df['Label'] = 1.0 # Positive sample
+            
+            print(f"   -> 사용 및 생성된 주요 컬럼: {list(preview_df.columns)}")
+            print(f"   -> 데이터셋 샘플 (상위 5개, 대피소 기준):\n{preview_df.to_string(index=False)}\n")
+            
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
         
         # --- ML 탐색 ---
         best_rf = None
@@ -169,12 +188,30 @@ def create_shelter_models(csv_path, manual_only=False):
             global_best_rf_config = (min_r, base_u, per_base, max_r)
             global_best_models['Best_RF'] = best_rf
             global_best_models['Best_RF_Name'] = best_rf_name
+            
+            # [추가] 상세 지표 계산
+            y_pred = best_rf.predict(X_test)
+            global_best_models['RF_Metrics'] = {
+                'precision': precision_score(y_test, y_pred),
+                'recall': recall_score(y_test, y_pred),
+                'f1': f1_score(y_test, y_pred),
+                'cm': confusion_matrix(y_test, y_pred)
+            }
 
         if best_knn_acc > global_best_knn_acc:
             global_best_knn_acc = best_knn_acc
             global_best_knn_config = (min_r, base_u, per_base, max_r)
             global_best_models['Best_KNN'] = best_knn
             global_best_models['Best_KNN_Name'] = best_knn_name
+
+            # [추가] 상세 지표 계산
+            y_pred = best_knn.predict(X_test)
+            global_best_models['KNN_Metrics'] = {
+                'precision': precision_score(y_test, y_pred),
+                'recall': recall_score(y_test, y_pred),
+                'f1': f1_score(y_test, y_pred),
+                'cm': confusion_matrix(y_test, y_pred)
+            }
 
     # 모든 결과를 CSV로 저장
     results_df = pd.DataFrame(all_results)
@@ -187,9 +224,27 @@ def create_shelter_models(csv_path, manual_only=False):
     print(f"\n[Success] All results saved (ml_results.csv, rf_detailed_results.csv, knn_detailed_results.csv)")
 
     print(f"\n=======================================================")
-    print(f"[Search Complete]")
-    print(f"- Best RF:  {global_best_rf_acc:.4f} (Config: min={global_best_rf_config[0]}, max={global_best_rf_config[3]})")
-    print(f"- Best KNN: {global_best_knn_acc:.4f} (Config: min={global_best_knn_config[0]}, max={global_best_knn_config[3]})")
+    print(f"[Search Complete - Detailed Performance Report]")
+    
+    rf_m = global_best_models.get('RF_Metrics')
+    if rf_m:
+        print(f"\n[Best RF: {global_best_models['Best_RF_Name']}]")
+        print(f" - Accuracy:  {global_best_rf_acc:.4f}")
+        print(f" - Precision: {rf_m['precision']:.4f}")
+        print(f" - Recall:    {rf_m['recall']:.4f}")
+        print(f" - F1-Score:  {rf_m['f1']:.4f}")
+        print(f" - Confusion Matrix:\n{rf_m['cm']}")
+
+    knn_m = global_best_models.get('KNN_Metrics')
+    if knn_m:
+        print(f"\n[Best KNN: {global_best_models['Best_KNN_Name']}]")
+        print(f" - Accuracy:  {global_best_knn_acc:.4f}")
+        print(f" - Precision: {knn_m['precision']:.4f}")
+        print(f" - Recall:    {knn_m['recall']:.4f}")
+        print(f" - F1-Score:  {knn_m['f1']:.4f}")
+        print(f" - Confusion Matrix:\n{knn_m['cm']}")
+    
+    print(f"=======================================================")
     
     return global_best_models, global_best_rf_config
 
