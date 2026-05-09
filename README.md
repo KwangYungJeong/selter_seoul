@@ -12,6 +12,7 @@
 - `convert_encoding.py` : 원본 데이터의 인코딩을 UTF-8로 변환하여 `shelter_seoul.csv`를 생성하는 스크립트
 - `shelter_seoul.csv` : (변환된 데이터셋) 파이썬 기본 인코딩(UTF-8)이 적용된 전처리 파일
 - `shelter_ml.py` : 머신러닝(RandomForest, KNN) 데이터 전처리 및 모델 학습, 정확도 평가 스크립트
+- `visualize_trees.py` : RandomForest 모델 내부의 의사결정 트리(Decision Tree) 구조를 이미지(`rf_5_trees.png`)로 추출하여 시각화하는 스크립트
 - `draw_map.py` : 학습된 예측 모델을 바탕으로 정적 지도 이미지(`blind_spots.png`)를 생성하는 스크립트
 - `draw_map_folium.py` : 정제된 데이터를 바탕으로 각 대피소의 동적 커버리지 반경(안전 구역)을 시각화하는 인터랙티브 위성 지도(`shelter_satellite_map.html`) 생성 스크립트
 
