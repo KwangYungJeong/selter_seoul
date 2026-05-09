@@ -1,0 +1,31 @@
+# Environments
+venv/
+env/
+.env
+.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data files
+*.csv
+*.xlsx
+*.tsv
+
+# Output files
+*.png
+*.jpg
+*.jpeg
+*.html
+
+# macOS
+.DS_Store
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
