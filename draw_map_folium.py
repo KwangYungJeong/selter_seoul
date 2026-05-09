@@ -3,6 +3,8 @@ import pandas as pd
 import folium
 import matplotlib.colors as colors
 import os
+from config import calculate_dynamic_radius
+from shelter_ml import create_shelter_models
 
 def draw_satellite_map(csv_path, output_path):
     print("\n--- 위성 지도 기반 시각화 시작 ---")
@@ -34,8 +36,8 @@ def draw_satellite_map(csv_path, output_path):
     print(" -> 수용 인원에 따른 대피소 커버리지(반투명 안전구역) 그리는 중...")
     # 실제 대피소 위치 추가 (수용 인원에 비례한 실제 커버리지 반경 포함)
     for lat, lng, cap in zip(shelter_lats, shelter_lngs, shelter_caps):
-        # 1. 실제 커버리지 반경 계산 (ML 학습 시 사용한 공식과 동일)
-        radius_m = float(np.clip(50 + (cap / 1000.0) * 15, 50, 500))
+        # 1. 실제 커버리지 반경 계산 (최적화된 파라미터 적용)
+        radius_m = float(calculate_dynamic_radius(np.array([cap]))[0])
         
         # 2. 커버리지 반경을 투명한 밝은 녹색(안전) 원으로 추가
         folium.Circle(

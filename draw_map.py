@@ -6,9 +6,8 @@ from shelter_ml import create_shelter_models
 def draw_map(csv_path, output_path):
     print("\n--- 지도 생성 스크립트 시작 ---")
     print("1. 데이터를 불러오고 모델을 재학습합니다...")
-    # 기존 코드의 학습 함수 재활용
-    models = create_shelter_models(csv_path)
-    rf_model = models['RandomForest']
+    # 기존 코드의 학습 함수 재활용 (시각화용 단일 파라미터만 학습하여 속도 최적화)
+    models, best_config = create_shelter_models(csv_path, manual_only=True)
     
     print("\n2. 대피소 위치 데이터를 불러옵니다...")
     df = pd.read_csv(csv_path)
@@ -29,8 +28,13 @@ def draw_map(csv_path, output_path):
     grid_points = np.c_[grid_lat.ravel(), grid_lng.ravel()]
     
     print("4. 생성된 10,000개의 위치 각각에 대해 대피소 안전도 예측을 수행합니다...")
-    # 확률 예측 (1에 가까울수록 안전, 0에 가까울수록 취약)
-    probs = rf_model.predict_proba(grid_points)[:, 1]
+    # 최고 성능을 보인 Best_KNN 모델을 사용하여 확률 예측
+    if 'Best_KNN' in models:
+        probs = models['Best_KNN'].predict_proba(grid_points)[:, 1]
+    else:
+        # 대비용: 모델이 하나만 있는 경우 등
+        first_model = next(iter(models.values()))
+        probs = first_model.predict_proba(grid_points)[:, 1]
     
     print("5. 그림(지도)을 생성하여 저장합니다...")
     plt.figure(figsize=(14, 10))
@@ -58,5 +62,5 @@ def draw_map(csv_path, output_path):
 
 if __name__ == "__main__":
     csv_path = 'shelter_seoul.csv'
-    output_path = '/Users/kyle/.gemini/antigravity/brain/a58f20b6-766c-4594-891a-8288cff529d4/blind_spots.png'
+    output_path = 'blind_spots.png'
     draw_map(csv_path, output_path)

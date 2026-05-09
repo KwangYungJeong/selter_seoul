@@ -1,0 +1,2 @@
+﻿min_r,base_u,per_base,max_r,best_rf_params,best_rf_acc,best_knn_params,best_knn_acc,winner_acc
+50.0,500.0,20.0,1000.0,"RF(n=100, d=9)",0.9365351629502573,KNN(K=5),0.9751286449399656,0.9751286449399656

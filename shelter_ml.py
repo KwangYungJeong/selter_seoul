@@ -1,12 +1,33 @@
+import sys
+import os
+
+# 윈도우 터미널 UTF-8 출력 설정
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python 3.7 미만 버전 대응
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
+
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree, KNeighborsClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import time
+import itertools
+from config import (
+    calculate_dynamic_radius, 
+    MIN_RADIUS_M_LIST, CAPACITY_BASE_UNIT_LIST, RADIUS_PER_BASE_UNIT_M_LIST, MAX_RADIUS_M_LIST,
+    MANUAL_MIN_RADIUS_M, MANUAL_CAPACITY_BASE_UNIT, MANUAL_RADIUS_PER_BASE_UNIT_M, MANUAL_MAX_RADIUS_M,
+    RF_N_ESTIMATORS_LIST, 
+    RF_MAX_DEPTH_LIST, 
+    KNN_K_VALUES
+)
 
-def create_shelter_models(csv_path):
+def create_shelter_models(csv_path, manual_only=False):
     print("1. 데이터 로드 및 전처리 중...")
     df = pd.read_csv(csv_path)
     
@@ -32,84 +53,169 @@ def create_shelter_models(csv_path):
     coords = coords_df[['lat', 'lng']].values
     capacities = coords_df['capacity'].values
     
-    # [수정] 수용인원 기반 동적 반경 계산 (기본 50m, 1000명당 15m 추가, 최대 500m 제한)
-    radii_m = np.clip(50 + (capacities / 1000.0) * 15, 50, 500)
-    
-    # Positive Data (대피소 실제 위치, 라벨 1)
     positive_data = coords
     y_pos = np.ones(len(positive_data))
     print(f"   -> 활성 민방위 대피소 데이터 갯수 (Positive): {len(positive_data)}개")
     
-    # Negative Data (가짜 위치, 라벨 0) 생성
-    print("2. Negative Data (실질적 대피소 커버리지 밖의 구역) 생성 중...")
-    start_time = time.time()
-    
     tree = BallTree(np.radians(positive_data), metric='haversine')
     earth_radius_m = 6371000.0
-    radii_rad = radii_m / earth_radius_m  # 각 대피소별 라디안 반경
     
-    negative_data = []
-    target_neg_count = len(positive_data)
+    if manual_only:
+        radius_combinations = [(MANUAL_MIN_RADIUS_M, MANUAL_CAPACITY_BASE_UNIT, MANUAL_RADIUS_PER_BASE_UNIT_M, MANUAL_MAX_RADIUS_M)]
+    else:
+        radius_combinations = list(itertools.product(
+            MIN_RADIUS_M_LIST, CAPACITY_BASE_UNIT_LIST, RADIUS_PER_BASE_UNIT_M_LIST, MAX_RADIUS_M_LIST
+        ))
+
     
-    # k=10을 사용하여 주변 10개의 대피소를 모두 검사하여 겹침 방지
-    while len(negative_data) < target_neg_count:
-        random_lats = np.random.uniform(lat_min, lat_max, 100000)
-        random_lngs = np.random.uniform(lng_min, lng_max, 100000)
-        random_coords = np.column_stack((random_lats, random_lngs))
+    print(f"\n2. Dataset and Parameter Search ({len(radius_combinations)} combinations)")
+    
+    global_best_rf_acc = 0
+    global_best_rf_config = None
+    global_best_knn_acc = 0
+    global_best_knn_config = None
+    
+    global_best_models = {}
+    all_results = []
+    rf_results_detailed = []
+    knn_results_detailed = []
+    
+    for r_idx, (min_r, base_u, per_base, max_r) in enumerate(radius_combinations):
+        print(f"\n--- [조합 {r_idx+1}/{len(radius_combinations)}] min={min_r}, base={base_u}, per={per_base}, max={max_r} ---")
+        start_time = time.time()
         
-        # 각 랜덤 좌표에 대해 가장 가까운 10개의 대피소 거리와 인덱스 추출
-        distances, indices = tree.query(np.radians(random_coords), k=10)
+        # 반경 계산
+        radii_m = calculate_dynamic_radius(capacities, min_r, base_u, per_base, max_r)
+        radii_rad = radii_m / earth_radius_m
         
-        # 특정 랜덤 좌표가 주변 10개 대피소 중 "단 하나라도" 해당 대피소의 동적 반경 안에 들어가면 커버되는 것으로 간주
-        is_covered = distances <= radii_rad[indices]
-        point_covered = np.any(is_covered, axis=1)
+        # Negative Data (실질적 대피소 커버리지 밖의 구역) 생성
+        np.random.seed(42)  # 재현성을 위한 시드 고정
+        negative_data = []
+        target_neg_count = len(positive_data)
         
-        valid_negatives = random_coords[~point_covered]
-        negative_data.extend(valid_negatives.tolist())
-    
-    negative_data = np.array(negative_data[:target_neg_count])
-    y_neg = np.zeros(len(negative_data))
-    print(f"   -> 무작위 취약 구역 위치 갯수 (Negative): {len(negative_data)}개 (소요 시간: {time.time()-start_time:.2f}초)")
-    
-    print("\n3. 머신러닝 모델 학습 및 비교")
-    X = np.vstack((positive_data, negative_data))
-    y = np.concatenate((y_pos, y_neg))
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    models = {}
-    
-    # Random Forest
-    rf_model = RandomForestClassifier(n_estimators=100, max_depth=20, random_state=42, n_jobs=-1)
-    rf_model.fit(X_train, y_train)
-    rf_acc = accuracy_score(y_test, rf_model.predict(X_test))
-    models['RandomForest'] = rf_model
-    print(f" [Random Forest] 정확도: {rf_acc:.4f}")
-    
-    # KNN
-    k_values = [1, 5, 15]
-    for k in k_values:
-        knn_model = KNeighborsClassifier(n_neighbors=k, weights='distance', n_jobs=-1)
-        knn_model.fit(X_train, y_train)
-        knn_acc = accuracy_score(y_test, knn_model.predict(X_test))
-        models[f'KNN(K={k})'] = knn_model
-        print(f" [KNN (K={k:2d})]    정확도: {knn_acc:.4f}")
+        while len(negative_data) < target_neg_count:
+            random_lats = np.random.uniform(lat_min, lat_max, 100000)
+            random_lngs = np.random.uniform(lng_min, lng_max, 100000)
+            random_coords = np.column_stack((random_lats, random_lngs))
+            
+            distances, indices = tree.query(np.radians(random_coords), k=10)
+            is_covered = distances <= radii_rad[indices]
+            point_covered = np.any(is_covered, axis=1)
+            
+            valid_negatives = random_coords[~point_covered]
+            negative_data.extend(valid_negatives.tolist())
         
-    return models
+        negative_data = np.array(negative_data[:target_neg_count])
+        y_neg = np.zeros(len(negative_data))
+        
+        X = np.vstack((positive_data, negative_data))
+        y = np.concatenate((y_pos, y_neg))
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # --- ML 탐색 ---
+        best_rf = None
+        best_rf_acc = 0
+        best_rf_name = ""
+        for n_est in RF_N_ESTIMATORS_LIST:
+            for depth in RF_MAX_DEPTH_LIST:
+                rf_model = RandomForestClassifier(n_estimators=n_est, max_depth=depth, random_state=42, n_jobs=-1)
+                rf_model.fit(X_train, y_train)
+                acc = accuracy_score(y_test, rf_model.predict(X_test))
+                
+                # 시각화용 상세 데이터 수집 (RF)
+                rf_results_detailed.append({
+                    'min_r': min_r, 'base_u': base_u, 'per_base': per_base, 'max_r': max_r,
+                    'n_estimators': n_est, 'max_depth': depth, 'accuracy': acc
+                })
+                
+                if acc > best_rf_acc:
+                    best_rf_acc = acc
+                    best_rf = rf_model
+                    best_rf_name = f'RF(n={n_est}, d={depth})'
+        
+        best_knn = None
+        best_knn_acc = 0
+        best_knn_name = ""
+        for k in KNN_K_VALUES:
+            knn_model = KNeighborsClassifier(n_neighbors=k, weights='distance', n_jobs=-1)
+            knn_model.fit(X_train, y_train)
+            acc = accuracy_score(y_test, knn_model.predict(X_test))
+            
+            # 시각화용 상세 데이터 수집 (KNN)
+            knn_results_detailed.append({
+                'min_r': min_r, 'base_u': base_u, 'per_base': per_base, 'max_r': max_r,
+                'K': k, 'accuracy': acc
+            })
+            
+            if acc > best_knn_acc:
+                best_knn_acc = acc
+                best_knn = knn_model
+                best_knn_name = f'KNN(K={k})'
+                
+        print(f" -> Time: {time.time()-start_time:.1f}s | {best_rf_name}: {best_rf_acc:.4f} | {best_knn_name}: {best_knn_acc:.4f}")
+        
+        # 결과 저장을 위한 데이터 수집 (RF/KNN 중 더 좋은 쪽의 정확도 기록)
+        result_entry = {
+            'min_r': min_r, 'base_u': base_u, 'per_base': per_base, 'max_r': max_r,
+            'best_rf_params': best_rf_name, 'best_rf_acc': best_rf_acc,
+            'best_knn_params': best_knn_name, 'best_knn_acc': best_knn_acc,
+            'winner_acc': max(best_rf_acc, best_knn_acc)
+        }
+        all_results.append(result_entry)
+
+        # 개별 모델별로 최고 성능일 때의 파라미터 조합 저장
+        if best_rf_acc > global_best_rf_acc:
+            global_best_rf_acc = best_rf_acc
+            global_best_rf_config = (min_r, base_u, per_base, max_r)
+            global_best_models['Best_RF'] = best_rf
+            global_best_models['Best_RF_Name'] = best_rf_name
+
+        if best_knn_acc > global_best_knn_acc:
+            global_best_knn_acc = best_knn_acc
+            global_best_knn_config = (min_r, base_u, per_base, max_r)
+            global_best_models['Best_KNN'] = best_knn
+            global_best_models['Best_KNN_Name'] = best_knn_name
+
+    # 모든 결과를 CSV로 저장
+    results_df = pd.DataFrame(all_results)
+    results_df.to_csv('ml_results.csv', index=False, encoding='utf-8-sig')
+    
+    # 상세 결과 저장 (시각화용)
+    pd.DataFrame(rf_results_detailed).to_csv('rf_detailed_results.csv', index=False, encoding='utf-8-sig')
+    pd.DataFrame(knn_results_detailed).to_csv('knn_detailed_results.csv', index=False, encoding='utf-8-sig')
+    
+    print(f"\n[Success] All results saved (ml_results.csv, rf_detailed_results.csv, knn_detailed_results.csv)")
+
+    print(f"\n=======================================================")
+    print(f"[Search Complete]")
+    print(f"- Best RF:  {global_best_rf_acc:.4f} (Config: min={global_best_rf_config[0]}, max={global_best_rf_config[3]})")
+    print(f"- Best KNN: {global_best_knn_acc:.4f} (Config: min={global_best_knn_config[0]}, max={global_best_knn_config[3]})")
+    
+    return global_best_models, global_best_rf_config
+
 
 def predict_and_compare(models, lat, lng, location_name):
-    print(f"\n=== 테스트 위치: {location_name} ===")
-    print(f"(위도: {lat:.5f}, 경도: {lng:.5f}) 주변에 적절한 대피소가 있을(안전도) 확률:")
+    print(f"\n=== Test Location: {location_name} ===")
+    print(f"(Lat: {lat:.5f}, Lng: {lng:.5f}) Safety Probability:")
     
-    for name, model in models.items():
-        prob = model.predict_proba([[lat, lng]])
-        shelter_prob = prob[0][1] * 100
-        print(f" - {name:<15} : {shelter_prob:5.1f}%")
+    X_test = np.array([[lat, lng]])
+    
+    rf_name = models.get('Best_RF_Name', 'RF')
+    rf_model = models.get('Best_RF')
+    if rf_model:
+        prob = rf_model.predict_proba(X_test)[0][1]
+        print(f" - {rf_name:<20}: {prob*100:>5.1f}%")
+
+    knn_name = models.get('Best_KNN_Name', 'KNN')
+    knn_model = models.get('Best_KNN')
+    if knn_model:
+        prob = knn_model.predict_proba(X_test)[0][1]
+        print(f" - {knn_name:<20}: {prob*100:>5.1f}%")
 
 if __name__ == "__main__":
     file_path = 'shelter_seoul.csv'
     try:
-        models = create_shelter_models(file_path)
-        print("\n=======================================================")
+        models, best_config = create_shelter_models(file_path)
         
         # 테스트 1: 대형 대피소가 모여있을 법한 서울시청 부근
         test_lat1, test_lng1 = 37.5665, 126.9780 
